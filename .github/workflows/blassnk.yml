@@ -14,7 +14,7 @@ on:
         required: true
 
   schedule:
-    - cron: '0 */6 * * *'  # Every 6 hours
+    - cron: '0 */6 * * *'  # Restart every 6 hours
 
 env:
   VPS_DIR: vps_data
@@ -27,14 +27,12 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      # Set inputs from workflow_dispatch or fallback for schedule
       - name: Set Inputs or Defaults
         run: |
           echo "VPS_NAME=${{ github.event.inputs.vps_name || 'auto-vps' }}" >> $GITHUB_ENV
           echo "VPS_PASS=${{ github.event.inputs.vps_pass || 'autopass' }}" >> $GITHUB_ENV
           echo "DISCORD_ID=${{ github.event.inputs.discord_id || 'none' }}" >> $GITHUB_ENV
 
-      # Restore cached data
       - name: Load Cached VPS Data
         id: cache-restore
         uses: actions/cache@v4
@@ -42,7 +40,6 @@ jobs:
           path: ${{ env.VPS_DIR }}
           key: vps-${{ env.VPS_NAME }}-cache
 
-      # Setup and save password
       - name: Setup VPS Directory
         run: |
           mkdir -p $VPS_DIR
@@ -53,7 +50,6 @@ jobs:
           sudo apt update
           sudo apt install -y neofetch screen curl wget
 
-      # Setup Tailscale
       - name: Tailscale Setup
         uses: tailscale/github-action@v2
         with:
@@ -61,12 +57,10 @@ jobs:
           hostname: ${{ env.VPS_NAME }}
           args: up --ssh
 
-      # Start tmate session
       - name: Start tmate
         id: tmate
         uses: mxschmitt/action-tmate@v3
 
-      # Create info.txt file
       - name: Generate VPS Info
         run: |
           echo "Name: $VPS_NAME" > info.txt
@@ -75,29 +69,23 @@ jobs:
           echo "Tmate SSH: ${{ steps.tmate.outputs.ssh }}" >> info.txt
           echo "Public IP: $(curl -s ifconfig.me)" >> info.txt
 
-      # Save cache for next restart
       - name: Save VPS State (Cache)
         uses: actions/cache/save@v4
         with:
           path: ${{ env.VPS_DIR }}
           key: vps-${{ env.VPS_NAME }}-cache
 
-      # Upload info.txt
       - name: Upload Info File
         uses: actions/upload-artifact@v4
         with:
           name: vps-info
           path: info.txt
 
-      # DM user if ID is provided
       - name: DM User on Discord
         if: env.DISCORD_ID != 'none'
         run: |
+          INFO=$(cat info.txt | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
           curl -X POST https://discord.com/api/v10/users/$DISCORD_ID/messages \
           -H "Authorization: Bot ${{ secrets.DISCORD_BOT_TOKEN }}" \
           -H "Content-Type: application/json" \
-          -d @- <<EOF
-          {
-            "content": "**✅ VPS Started / Restarted**\n\`\`\`\n$(cat info.txt)\n\`\`\`"
-          }
-EOF
+          -d "{\"content\": \"**✅ VPS Started / Restarted**\\n\\\`\\\`\\\`\\n$INFO\\n\\\`\\\`\\\`\"}"
