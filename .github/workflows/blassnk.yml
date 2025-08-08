@@ -4,64 +4,65 @@ on:
   workflow_dispatch:
     inputs:
       username:
-        description: 'Username'
+        description: 'VPS Username'
         required: true
+        default: 'myuser'
       password:
-        description: 'Password'
+        description: 'VPS Password'
         required: true
-      discord_webhook:
-        description: 'Discord Webhook URL'
-        required: true
+        default: 'mypassword'
   schedule:
     - cron: '0 */6 * * *'  # Restart every 6 hours
 
 jobs:
-  deploy:
+  vps:
     runs-on: ubuntu-latest
     timeout-minutes: 357
     steps:
-    - name: Cache VPS files
+    - name: Set up persistent storage
       uses: actions/cache@v3
       with:
         path: storage
-        key: persistent-storage
+        key: persistent-vps-storage
 
-    - name: Setup VPS
+    - name: Set up VPS
       run: |
-        set -e
         sudo apt update
         sudo apt install -y curl unzip openssh-server tmate
 
-        mkdir -p storage/home/${{ github.event.inputs.username }}
-        sudo useradd -m -d $PWD/storage/home/${{ github.event.inputs.username }} -s /bin/bash ${{ github.event.inputs.username }} || true
-        sudo usermod -d $PWD/storage/home/${{ github.event.inputs.username }} ${{ github.event.inputs.username }}
-        echo "${{ github.event.inputs.username }}:${{ github.event.inputs.password }}" | sudo chpasswd
+        # Create persistent user
+        mkdir -p storage/home
+        sudo useradd -m -d $PWD/storage/home/${{ github.event.inputs.username || 'myuser' }} -s /bin/bash ${{ github.event.inputs.username || 'myuser' }} || true
+        sudo usermod -d $PWD/storage/home/${{ github.event.inputs.username || 'myuser' }} ${{ github.event.inputs.username || 'myuser' }}
+        echo "${{ github.event.inputs.username || 'myuser' }}:${{ github.event.inputs.password || 'mypassword' }}" | sudo chpasswd
 
+        # Start SSH server
         sudo service ssh start
 
-        # Setup tailscale
+        # Install Tailscale
         curl -fsSL https://tailscale.com/install.sh | sh
         sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --ssh --hostname=vps-${{ github.run_id }}
 
-        # Setup tmate session
-        tmate -S /tmp/tmate.sock new-session -d
-        tmate -S /tmp/tmate.sock wait tmate-ready
-        TMATE_SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
+        # Start tmate session in background and capture SSH
+        TMATE_LOG="tmate_output.txt"
+        tmate -F > $TMATE_LOG 2>&1 &
+        sleep 15  # Wait for tmate to start
+        TMATE_SSH=$(grep -o 'ssh [^ ]*' $TMATE_LOG | head -n 1)
 
-        IPV4=$(curl -s4 https://ifconfig.me)
+        # Save info to file for Discord bot to DM
+        IP4=$(curl -s4 https://ifconfig.me)
         TAILSCALE_IP=$(tailscale ip -4)
+        USERNAME=${{ github.event.inputs.username || 'myuser' }}
+        PASSWORD=${{ github.event.inputs.password || 'mypassword' }}
 
-        echo "Saving VPS Info to file..."
-        echo "Username: ${{ github.event.inputs.username }}" > vps_info.txt
-        echo "Password: ${{ github.event.inputs.password }}" >> vps_info.txt
-        echo "IPv4: $IPV4" >> vps_info.txt
+        echo "Username: $USERNAME" > vps_info.txt
+        echo "Password: $PASSWORD" >> vps_info.txt
+        echo "Public IPv4: $IP4" >> vps_info.txt
         echo "Tailscale IP: $TAILSCALE_IP" >> vps_info.txt
-        echo "Tailscale SSH: ssh ${{ github.event.inputs.username }}@$TAILSCALE_IP" >> vps_info.txt
+        echo "Tailscale SSH: ssh $USERNAME@$TAILSCALE_IP" >> vps_info.txt
         echo "Tmate SSH: $TMATE_SSH" >> vps_info.txt
 
-        curl -H "Content-Type: application/json" \
-          -X POST \
-          -d "{\"content\": \"✅ **Your VPS is Ready!**\\n👤 Username: ${{ github.event.inputs.username }}\\n🔐 Password: ${{ github.event.inputs.password }}\\n🌍 IPv4: $IPV4\\n🔗 Tailscale SSH: \`ssh ${{ github.event.inputs.username }}@$TAILSCALE_IP\`\\n🔗 Tmate SSH: \`$TMATE_SSH\`\"}" \
-          "${{ github.event.inputs.discord_webhook }}"
+        cat vps_info.txt
 
+        # Keep VPS alive
         sleep 6h
