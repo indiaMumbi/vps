@@ -1,0 +1,68 @@
+name: VPS Deploy (Tailscale + SSHx)
+
+on:
+  workflow_dispatch:
+    inputs:
+      vps_name:
+        description: "Name of the VPS"
+        required: true
+      discord_id:
+        description: "Discord ID of the user"
+        required: true
+
+  schedule:
+    - cron: "0 */6 * * *"  # Restart every 6 hours
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install dependencies
+      run: sudo apt update && sudo apt install -y jq curl openssh-server
+
+    - name: Install and start Tailscale
+      run: |
+        curl -fsSL https://tailscale.com/install.sh | sh
+        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --ssh
+        echo "TAILSCALE_IP=$(tailscale ip -4)" >> $GITHUB_ENV
+
+    - name: Configure SSH (key-only)
+      run: |
+        sudo adduser --disabled-password --gecos "" ${{ github.event.inputs.vps_name }}
+        sudo usermod -aG sudo ${{ github.event.inputs.vps_name }}
+
+        sudo mkdir -p /home/${{ github.event.inputs.vps_name }}/.ssh
+        echo "${{ secrets.SSH_PUBLIC_KEY }}" | sudo tee /home/${{ github.event.inputs.vps_name }}/.ssh/authorized_keys
+        sudo chmod 700 /home/${{ github.event.inputs.vps_name }}/.ssh
+        sudo chmod 600 /home/${{ github.event.inputs.vps_name }}/.ssh/authorized_keys
+        sudo chown -R ${{ github.event.inputs.vps_name }}:${{ github.event.inputs.vps_name }} /home/${{ github.event.inputs.vps_name }}/.ssh
+
+        sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+        sudo sed -i 's/^PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+        sudo systemctl restart ssh
+
+    - name: Install SSHx and start session
+      run: |
+        curl -fsSL https://sshx.io/get | sh
+        SSHX_URL=$(sshx | grep -Eo 'https://sshx.io/s/[a-zA-Z0-9]+')
+        echo "SSHX_URL=$SSHX_URL" >> $GITHUB_ENV
+
+    - name: Save VPS Info
+      run: |
+        echo "VPS Name: ${{ github.event.inputs.vps_name }}" > vps_info.txt
+        echo "Tailscale IPv4: $TAILSCALE_IP" >> vps_info.txt
+        echo "Direct SSH: ssh ${{ github.event.inputs.vps_name }}@$TAILSCALE_IP" >> vps_info.txt
+        echo "SSHx Link: $SSHX_URL" >> vps_info.txt
+        echo "DiscordID: ${{ github.event.inputs.discord_id }}" >> vps_info.txt
+        cat vps_info.txt
+
+    - name: Upload VPS Info for Discord Bot
+      uses: actions/upload-artifact@v4
+      with:
+        name: vps-details
+        path: vps_info.txt
+
+    - name: Keep VPS Alive
+      run: |
+        echo "Keeping VPS alive for 6 hours..."
+        sleep 6h
