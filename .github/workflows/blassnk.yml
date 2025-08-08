@@ -1,16 +1,16 @@
-name: Persistent VPS with SSHX + Tailscale
+name: Persistent VPS with tmate + Tailscale
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 */6 * * *'  # Restart every 6 hours
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 357
     steps:
-    - name: Set up persistent volume
+    - name: Setup persistent volume
       uses: actions/cache@v3
       with:
         path: storage
@@ -19,34 +19,32 @@ jobs:
     - name: Setup VPS
       run: |
         sudo apt update
-        sudo apt install -y curl unzip openssh-server
-        
-        # Setup storage folder
-        mkdir -p storage/home
-        sudo useradd -m -d /home/vpsuser -s /bin/bash vpsuser || true
-        sudo usermod -d $PWD/storage/home vpsuser
-        echo "vpsuser:123456" | sudo chpasswd
+        sudo apt install -y curl unzip openssh-server tmate
 
-        # Enable SSH
+        # Create persistent user
+        mkdir -p storage/home
+        sudo useradd -m -d /home/myuser -s /bin/bash myuser || true
+        sudo usermod -d $PWD/storage/home myuser
+        echo "myuser:123456" | sudo chpasswd
+
+        # Start SSH service
         sudo service ssh start
 
-        # Tailscale (auto login)
+        # Install Tailscale (without browser login)
         curl -fsSL https://tailscale.com/install.sh | sh
-        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --ssh --hostname=persistent-vps
+        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --ssh --hostname=vps-tmate
 
-        # SSHX Install
-        curl -fsSL https://sshx.io/get | sh
-        sudo mv sshx /usr/local/bin/sshx || true
-        chmod +x /usr/local/bin/sshx
+        # Start tmate
+        tmate -F &
 
-        # Print Access Info
-        echo "=================="
-        echo "Username: vpsuser"
+        # Output info
+        echo "=============================="
+        echo "Username: myuser"
         echo "Password: 123456"
-        echo "Public IPv4: $(curl -s4 https://ifconfig.me)"
+        echo "IPv4: $(curl -s4 https://ifconfig.me)"
         echo "Tailscale IP: $(tailscale ip -4)"
-        echo "SSHX: $(sshx --print-only)"
-        echo "=================="
+        echo "Tailscale SSH: ssh myuser@$(tailscale ip -4)"
+        echo "=============================="
 
-        # Keep alive
+        # Keep VPS alive
         sleep 6h
