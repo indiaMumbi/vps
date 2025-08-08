@@ -1,68 +1,89 @@
-name: Persistent VPS with Tailscale + Tmate
+name: Persistent VPS with tmate + Tailscale
 
 on:
   workflow_dispatch:
     inputs:
-      username:
-        description: 'VPS Username'
+      vps_name:
+        description: "VPS Name"
         required: true
-        default: 'myuser'
-      password:
-        description: 'VPS Password'
+      vps_pass:
+        description: "VPS Password"
         required: true
-        default: 'mypassword'
+      discord_id:
+        description: "Discord User ID"
+        required: true
+
   schedule:
     - cron: '0 */6 * * *'  # Restart every 6 hours
 
+env:
+  VPS_DIR: "./vps_data"
+
 jobs:
-  vps:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 357
+    name: Start Persistent VPS
     steps:
-    - name: Set up persistent storage
-      uses: actions/cache@v3
-      with:
-        path: storage
-        key: persistent-vps-storage
+      - name: Checkout Repo
+        uses: actions/checkout@v4
 
-    - name: Set up VPS
-      run: |
-        sudo apt update
-        sudo apt install -y curl unzip openssh-server tmate
+      - name: Load Cached VPS Data
+        id: cache-restore
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VPS_DIR }}
+          key: ${{ github.event.inputs.vps_name || 'default' }}-vps-cache
 
-        # Create persistent user
-        mkdir -p storage/home
-        sudo useradd -m -d $PWD/storage/home/${{ github.event.inputs.username || 'myuser' }} -s /bin/bash ${{ github.event.inputs.username || 'myuser' }} || true
-        sudo usermod -d $PWD/storage/home/${{ github.event.inputs.username || 'myuser' }} ${{ github.event.inputs.username || 'myuser' }}
-        echo "${{ github.event.inputs.username || 'myuser' }}:${{ github.event.inputs.password || 'mypassword' }}" | sudo chpasswd
+      - name: Setup VPS Directory
+        run: |
+          mkdir -p $VPS_DIR
+          echo "${{ github.event.inputs.vps_pass || 'defaultpass' }}" > $VPS_DIR/pass.txt
 
-        # Start SSH server
-        sudo service ssh start
+      - name: Install Tools
+        run: |
+          sudo apt update
+          sudo apt install -y neofetch screen curl wget
 
-        # Install Tailscale
-        curl -fsSL https://tailscale.com/install.sh | sh
-        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --ssh --hostname=vps-${{ github.run_id }}
+      - name: Tailscale Setup
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          hostname: ${{ github.event.inputs.vps_name || 'vps' }}
+          args: up --ssh
 
-        # Start tmate session in background and capture SSH
-        TMATE_LOG="tmate_output.txt"
-        tmate -F > $TMATE_LOG 2>&1 &
-        sleep 15  # Wait for tmate to start
-        TMATE_SSH=$(grep -o 'ssh [^ ]*' $TMATE_LOG | head -n 1)
+      - name: Start tmate
+        id: tmate
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: false
 
-        # Save info to file for Discord bot to DM
-        IP4=$(curl -s4 https://ifconfig.me)
-        TAILSCALE_IP=$(tailscale ip -4)
-        USERNAME=${{ github.event.inputs.username || 'myuser' }}
-        PASSWORD=${{ github.event.inputs.password || 'mypassword' }}
+      - name: Generate VPS Info
+        run: |
+          echo "Name: ${{ github.event.inputs.vps_name || 'vps' }}" > info.txt
+          echo "Password: $(cat $VPS_DIR/pass.txt)" >> info.txt
+          echo "Tailscale IP: $(tailscale ip -4)" >> info.txt
+          echo "Tmate SSH: ${{ steps.tmate.outputs.ssh }}" >> info.txt
+          echo "Public IP: $(curl -s ifconfig.me)" >> info.txt
 
-        echo "Username: $USERNAME" > vps_info.txt
-        echo "Password: $PASSWORD" >> vps_info.txt
-        echo "Public IPv4: $IP4" >> vps_info.txt
-        echo "Tailscale IP: $TAILSCALE_IP" >> vps_info.txt
-        echo "Tailscale SSH: ssh $USERNAME@$TAILSCALE_IP" >> vps_info.txt
-        echo "Tmate SSH: $TMATE_SSH" >> vps_info.txt
+      - name: Save VPS State (Cache)
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.VPS_DIR }}
+          key: ${{ github.event.inputs.vps_name || 'default' }}-vps-cache
 
-        cat vps_info.txt
+      - name: Upload Info File
+        uses: actions/upload-artifact@v4
+        with:
+          name: vps-info
+          path: info.txt
 
-        # Keep VPS alive
-        sleep 6h
+      - name: DM User on Discord
+        run: |
+          curl -X POST https://discord.com/api/v10/users/${{ github.event.inputs.discord_id }}/messages \
+          -H "Authorization: Bot ${{ secrets.DISCORD_BOT_TOKEN }}" \
+          -H "Content-Type: application/json" \
+          -d @- << EOF
+          {
+            "content": "**🔁 VPS Auto-Restarted / New Session**\n\`\`\`\n$(cat info.txt)\n\`\`\`"
+          }
+EOF
