@@ -1,68 +1,63 @@
-name: VPS Deploy (Tailscale + SSHx)
+name: Deploy VPS Bot with SSHx + Tailscale
 
 on:
   workflow_dispatch:
-    inputs:
-      vps_name:
-        description: "Name of the VPS"
-        required: true
-      discord_id:
-        description: "Discord ID of the user"
-        required: true
-
   schedule:
-    - cron: "0 */6 * * *"  # Restart every 6 hours
+    - cron: '0 */6 * * *'  # Restart every 6 hours
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    steps:
-    - name: Install dependencies
-      run: sudo apt update && sudo apt install -y jq curl openssh-server
+    timeout-minutes: 360
 
-    - name: Install and start Tailscale
+    steps:
+    - name: Setup user info
+      run: |
+        echo "Reading user input"
+        echo "VPS_NAME=$(cat name.txt)" >> $GITHUB_ENV
+        echo "VPS_PASS=$(cat pass.txt)" >> $GITHUB_ENV
+
+    - name: Install dependencies
+      run: |
+        sudo apt update && sudo apt install -y curl unzip wget openssh-server zip
+
+    - name: Setup Tailscale
       run: |
         curl -fsSL https://tailscale.com/install.sh | sh
-        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --ssh
-        echo "TAILSCALE_IP=$(tailscale ip -4)" >> $GITHUB_ENV
+        sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --ssh
+        sleep 5
+        TS_IP=$(tailscale ip -4)
+        echo "TS_IP=$TS_IP" >> $GITHUB_ENV
 
-    - name: Configure SSH (key-only)
+    - name: Install SSHx (Manual Non-blocking)
       run: |
-        sudo adduser --disabled-password --gecos "" ${{ github.event.inputs.vps_name }}
-        sudo usermod -aG sudo ${{ github.event.inputs.vps_name }}
-
-        sudo mkdir -p /home/${{ github.event.inputs.vps_name }}/.ssh
-        echo "${{ secrets.SSH_PUBLIC_KEY }}" | sudo tee /home/${{ github.event.inputs.vps_name }}/.ssh/authorized_keys
-        sudo chmod 700 /home/${{ github.event.inputs.vps_name }}/.ssh
-        sudo chmod 600 /home/${{ github.event.inputs.vps_name }}/.ssh/authorized_keys
-        sudo chown -R ${{ github.event.inputs.vps_name }}:${{ github.event.inputs.vps_name }} /home/${{ github.event.inputs.vps_name }}/.ssh
-
-        sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
-        sudo sed -i 's/^PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
-        sudo systemctl restart ssh
-
-    - name: Install SSHx and start session
-      run: |
-        curl -fsSL https://sshx.io/get | sh
-        SSHX_URL=$(sshx | grep -Eo 'https://sshx.io/s/[a-zA-Z0-9]+')
+        mkdir -p ~/sshx && cd ~/sshx
+        curl -L https://s3.amazonaws.com/sshx/sshx-x86_64-unknown-linux-musl.tar.gz -o sshx.tar.gz
+        tar -xvzf sshx.tar.gz
+        chmod +x sshx
+        sudo mv sshx /usr/local/bin/
+        cd ~
+        touch dummyfile
+        nohup sshx dummyfile > sshx_log.txt 2>&1 &
+        sleep 5
+        SSHX_URL=$(grep -Eo 'https://sshx.io/s/[a-zA-Z0-9]+' sshx_log.txt | head -n 1)
         echo "SSHX_URL=$SSHX_URL" >> $GITHUB_ENV
 
-    - name: Save VPS Info
+    - name: Start SSH
       run: |
-        echo "VPS Name: ${{ github.event.inputs.vps_name }}" > vps_info.txt
-        echo "Tailscale IPv4: $TAILSCALE_IP" >> vps_info.txt
-        echo "Direct SSH: ssh ${{ github.event.inputs.vps_name }}@$TAILSCALE_IP" >> vps_info.txt
-        echo "SSHx Link: $SSHX_URL" >> vps_info.txt
-        echo "DiscordID: ${{ github.event.inputs.discord_id }}" >> vps_info.txt
-        cat vps_info.txt
+        sudo service ssh start
+        echo -e "${{ env.VPS_PASS }}\n${{ env.VPS_PASS }}" | sudo passwd $USER
 
-    - name: Upload VPS Info for Discord Bot
-      uses: actions/upload-artifact@v4
-      with:
-        name: vps-details
-        path: vps_info.txt
-
-    - name: Keep VPS Alive
+    - name: Backup VPS Files to Google Drive
       run: |
-        echo "Keeping VPS alive for 6 hours..."
-        sleep 6h
+        zip -r backup-${{ env.VPS_NAME }}.zip . || true
+        curl -sL https://raw.githubusercontent.com/prasmussen/gdrive/master/install.sh | bash
+        ./gdrive upload backup-${{ env.VPS_NAME }}.zip || true
+
+    - name: Send DM with SSHx + Tailscale Info (using webhook or bot)
+      env:
+        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      run: |
+        curl -H "Content-Type: application/json" -X POST -d "{
+          \"content\": \"🔐 **Your VPS is Ready**\n\n**Name:** ${{ env.VPS_NAME }}\n**Password:** ${{ env.VPS_PASS }}\n**Tailscale IP:** ${{ env.TS_IP }}\n**SSHx Link:** ${{ env.SSHX_URL }}\n\nUse \`ssh user@${{ env.TS_IP }}\` or SSHx link to connect.\"
+        }" $DISCORD_WEBHOOK
