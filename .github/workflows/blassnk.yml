@@ -1,4 +1,4 @@
-name: Persistent VPS with tmate + Tailscale
+name: Persistent VPS with Tmate + Tailscale
 
 on:
   workflow_dispatch:
@@ -16,76 +16,57 @@ on:
   schedule:
     - cron: '0 */6 * * *'  # Restart every 6 hours
 
-env:
-  VPS_DIR: vps_data
-
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 360
     steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
+    - name: Set up persistent volume
+      uses: actions/cache@v3
+      with:
+        path: vps_data
+        key: vps-persist-${{ github.event.inputs.vps_name || 'default' }}
 
-      - name: Set Inputs or Defaults
-        run: |
-          echo "VPS_NAME=${{ github.event.inputs.vps_name || 'auto-vps' }}" >> $GITHUB_ENV
-          echo "VPS_PASS=${{ github.event.inputs.vps_pass || 'autopass' }}" >> $GITHUB_ENV
-          echo "DISCORD_ID=${{ github.event.inputs.discord_id || 'none' }}" >> $GITHUB_ENV
+    - name: Create VPS folder
+      run: mkdir -p vps_data/${{ github.event.inputs.vps_name || 'default' }}
 
-      - name: Load Cached VPS Data
-        id: cache-restore
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.VPS_DIR }}
-          key: vps-${{ env.VPS_NAME }}-cache
+    - name: Install tools
+      run: |
+        sudo apt update
+        sudo apt install -y openssh-server tmate curl unzip
 
-      - name: Setup VPS Directory
-        run: |
-          mkdir -p $VPS_DIR
-          echo "$VPS_PASS" > $VPS_DIR/pass.txt
+    - name: Set root password
+      run: echo "root:${{ github.event.inputs.vps_pass }}" | sudo chpasswd
 
-      - name: Install Tools
-        run: |
-          sudo apt update
-          sudo apt install -y neofetch screen curl wget
+    - name: Enable SSH
+      run: sudo systemctl enable ssh && sudo systemctl start ssh
 
-      - name: Tailscale Setup
-        uses: tailscale/github-action@v2
-        with:
-          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-          hostname: ${{ env.VPS_NAME }}
-          args: up --ssh
+    - name: Setup tmate
+      run: |
+        tmate -S /tmp/tmate.sock new-session -d
+        tmate -S /tmp/tmate.sock wait tmate-ready
+        echo "SSH: $(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')" > tmate.txt
+        echo "Web: $(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')" >> tmate.txt
 
-      - name: Start tmate
-        id: tmate
-        uses: mxschmitt/action-tmate@v3
+    - name: Setup Tailscale
+      run: |
+        curl -fsSL https://tailscale.com/install.sh | sh
+        sudo tailscale up --ssh --accept-routes --accept-dns=false
 
-      - name: Generate VPS Info
-        run: |
-          echo "Name: $VPS_NAME" > info.txt
-          echo "Password: $(cat $VPS_DIR/pass.txt)" >> info.txt
-          echo "Tailscale IP: $(tailscale ip -4)" >> info.txt
-          echo "Tmate SSH: ${{ steps.tmate.outputs.ssh }}" >> info.txt
-          echo "Public IP: $(curl -s ifconfig.me)" >> info.txt
+    - name: Get Tailscale IP
+      run: |
+        echo "Tailscale IP: $(tailscale ip -4)" >> tmate.txt
 
-      - name: Save VPS State (Cache)
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ env.VPS_DIR }}
-          key: vps-${{ env.VPS_NAME }}-cache
+    - name: Save VPS Info
+      run: |
+        echo "Name: ${{ github.event.inputs.vps_name }}" >> tmate.txt
+        echo "Password: ${{ github.event.inputs.vps_pass }}" >> tmate.txt
 
-      - name: Upload Info File
-        uses: actions/upload-artifact@v4
-        with:
-          name: vps-info
-          path: info.txt
-
-      - name: DM User on Discord
-        if: env.DISCORD_ID != 'none'
-        run: |
-          INFO=$(cat info.txt | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
-          curl -X POST https://discord.com/api/v10/users/$DISCORD_ID/messages \
-          -H "Authorization: Bot ${{ secrets.DISCORD_BOT_TOKEN }}" \
-          -H "Content-Type: application/json" \
-          -d "{\"content\": \"**✅ VPS Started / Restarted**\\n\\\`\\\`\\\`\\n$INFO\\n\\\`\\\`\\\`\"}"
+    - name: DM Discord User
+      env:
+        DISCORD_WEBHOOK: https://discord.com/api/v9/users/${{ github.event.inputs.discord_id }}/messages
+        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      run: |
+        curl -X POST -H "Authorization: Bot $BOT_TOKEN" -H "Content-Type: application/json" \
+        --data "{\"content\": \"\`\`\`$(cat tmate.txt)\`\`\`\"}" \
+        $DISCORD_WEBHOOK
