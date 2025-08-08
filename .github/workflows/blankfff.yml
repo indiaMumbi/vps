@@ -1,92 +1,68 @@
-name: Continuous Persistent VPS
+name: VPS Deploy (Tailscale + SSHx)
 
 on:
-  schedule:
-    - cron: '0 */6 * * *'  # Every 6 hours
   workflow_dispatch:
+    inputs:
+      vps_name:
+        description: "Name of the VPS"
+        required: true
+      discord_id:
+        description: "Discord ID of the user"
+        required: true
+
+  schedule:
+    - cron: "0 */6 * * *"  # Restart every 6 hours
 
 jobs:
-  vps-session:
+  deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 350  # Just under 6 hours
+    steps:
+    - name: Install dependencies
+      run: sudo apt update && sudo apt install -y jq curl openssh-server
 
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+    - name: Install and start Tailscale
+      run: |
+        curl -fsSL https://tailscale.com/install.sh | sh
+        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --ssh
+        echo "TAILSCALE_IP=$(tailscale ip -4)" >> $GITHUB_ENV
 
-      - name: Set hostname to biralo
-        run: sudo hostnamectl set-hostname biralo
+    - name: Configure SSH (key-only)
+      run: |
+        sudo adduser --disabled-password --gecos "" ${{ github.event.inputs.vps_name }}
+        sudo usermod -aG sudo ${{ github.event.inputs.vps_name }}
 
-      - name: Download VPS backup (if any)
-        uses: actions/download-artifact@v4
-        with:
-          name: vps-backup
-          path: ./backup
-        continue-on-error: true
+        sudo mkdir -p /home/${{ github.event.inputs.vps_name }}/.ssh
+        echo "${{ secrets.SSH_PUBLIC_KEY }}" | sudo tee /home/${{ github.event.inputs.vps_name }}/.ssh/authorized_keys
+        sudo chmod 700 /home/${{ github.event.inputs.vps_name }}/.ssh
+        sudo chmod 600 /home/${{ github.event.inputs.vps_name }}/.ssh/authorized_keys
+        sudo chown -R ${{ github.event.inputs.vps_name }}:${{ github.event.inputs.vps_name }} /home/${{ github.event.inputs.vps_name }}/.ssh
 
-      - name: Install prerequisites
-        run: |
-          sudo apt update
-          sudo apt install -y tmate curl unzip sudo net-tools neofetch
+        sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+        sudo sed -i 's/^PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+        sudo systemctl restart ssh
 
-      - name: Install Tailscale official script
-        run: |
-          curl -fsSL https://tailscale.com/install.sh | sh
+    - name: Install SSHx and start session
+      run: |
+        curl -fsSL https://sshx.io/get | sh
+        SSHX_URL=$(sshx -o json | jq -r '.url')
+        echo "SSHX_URL=$SSHX_URL" >> $GITHUB_ENV
 
-      - name: Restore backup files
-        run: |
-          if [ -f ./backup/backup.zip ]; then
-            unzip -o ./backup/backup.zip -d /
-          else
-            echo "No backup found, starting fresh"
-          fi
+    - name: Save VPS Info
+      run: |
+        echo "VPS Name: ${{ github.event.inputs.vps_name }}" > vps_info.txt
+        echo "Tailscale IPv4: $TAILSCALE_IP" >> vps_info.txt
+        echo "Direct SSH: ssh ${{ github.event.inputs.vps_name }}@$TAILSCALE_IP" >> vps_info.txt
+        echo "SSHx Link: $SSHX_URL" >> vps_info.txt
+        echo "DiscordID: ${{ github.event.inputs.discord_id }}" >> vps_info.txt
+        cat vps_info.txt
 
-      - name: Restore Tailscale state
-        run: |
-          if [ -f /opt/vps-backup/data/tailscaled.state ]; then
-            sudo mkdir -p /var/lib/tailscale
-            sudo cp /opt/vps-backup/data/tailscaled.state /var/lib/tailscale/tailscaled.state
-            sudo chmod 600 /var/lib/tailscale/tailscaled.state
-          fi
+    - name: Upload VPS Info for Discord Bot
+      uses: actions/upload-artifact@v4
+      with:
+        name: vps-details
+        path: vps_info.txt
 
-      - name: Start Tailscale
-        run: |
-          sudo tailscaled &
-          sleep 8
-          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTHKEY }} --hostname=biralo || echo "Tailscale already up"
-
-      - name: Create user notyet with sudo
-        run: |
-          if ! id -u notyet >/dev/null 2>&1; then
-            sudo useradd -m -s /bin/bash biralo
-            echo "notyet:notyet" | sudo chpasswd
-            sudo usermod -aG sudo notyet
-            echo "notyet ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/biralo
-          fi
-
-      - name: Start tmate session for SSH access
-        uses: mxschmitt/action-tmate@v3
-
-      - name: Show Tailscale IP and tmate info
-        run: |
-          echo "🔗 Tailscale IP:"
-          tailscale ip -4 || echo "Tailscale IP not found"
-          echo ""
-          echo "🔑 tmate SSH session:"
-          cat $HOME/.tmate.sock/ssh
-
-      - name: Sleep to keep VPS alive
-        run: sleep 21600  # 6 hours
-
-      - name: Backup VPS data and tailscale state
-        run: |
-          sudo mkdir -p /opt/vps-backup/data
-          sudo cp /var/lib/tailscale/tailscaled.state /opt/vps-backup/data/
-          sudo chown -R $USER:$USER /opt/vps-backup
-          zip -r backup.zip /opt/vps-backup
-
-      - name: Upload VPS backup artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: vps-backup
-          path: backup.zip
+    - name: Keep VPS Alive
+      run: |
+        echo "Keeping VPS alive for 6 hours..."
+        sleep 6h
