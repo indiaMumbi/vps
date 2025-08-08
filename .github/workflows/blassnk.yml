@@ -1,77 +1,69 @@
-name: Persistent VPS Bot
+name: Persistent VPS with Tailscale + SSHX
 
 on:
   workflow_dispatch:
     inputs:
-      name:
-        description: 'VPS Name'
+      USERNAME:
+        description: 'Your SSH Username'
         required: true
-      pass:
-        description: 'VPS Password'
+      PASSWORD:
+        description: 'Your SSH Password'
         required: true
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 */6 * * *'  # Every 6 hours restart
 
 jobs:
-  deploy:
+  run-vps:
     runs-on: ubuntu-latest
-    name: Deploy VPS
+    name: VPS Persistent Runner
     steps:
-      - name: Set up VPS Name & Password
-        run: |
-          echo "VPS_NAME=${{ github.event.inputs.name || 'AutoVPS' }}" >> $GITHUB_ENV
-          echo "VPS_PASS=${{ github.event.inputs.pass || 'vpspass123' }}" >> $GITHUB_ENV
 
-      - name: Install Required Tools
-        run: |
-          sudo apt update
-          sudo apt install -y curl unzip wget ssh sudo
+    - name: Set user-defined env
+      run: |
+        echo "USER=${{ github.event.inputs.USERNAME }}" >> $GITHUB_ENV
+        echo "PASS=${{ github.event.inputs.PASSWORD }}" >> $GITHUB_ENV
 
-      - name: Setup Tailscale
-        run: |
-          curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --ssh --hostname $VPS_NAME
-          echo "TAIL_IP=$(tailscale ip -4)" >> $GITHUB_ENV
+    - name: Setup Swap and Install Packages
+      run: |
+        sudo fallocate -l 2G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+        sudo apt update -y
+        sudo apt install curl unzip net-tools -y
 
-      - name: Install SSHx
-        run: |
-          curl -fsSL https://sshx.io/get | sh
-          sudo mv sshx /usr/local/bin/
-          chmod +x /usr/local/bin/sshx
+    - name: Install Tailscale
+      run: |
+        curl -fsSL https://tailscale.com/install.sh | sh
+        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --ssh --accept-routes
 
-      - name: Setup rclone for backup
-        run: |
-          echo "${{ secrets.RCLONE_CONFIG }}" > rclone.conf
-          mkdir -p /root/mydata
-          echo "Hello from $VPS_NAME at $(date)" > /root/mydata/info.txt
-          rclone --config rclone.conf copy /root/mydata remote:VPS_Backups/$VPS_NAME
+    - name: Install SSHX (fixed)
+      run: |
+        curl -L https://s3.amazonaws.com/sshx/sshx-x86_64-unknown-linux-musl.tar.gz -o sshx.tar.gz
+        tar -xzf sshx.tar.gz
+        sudo mv sshx /usr/local/bin/
+        sudo chmod +x /usr/local/bin/sshx
 
-      - name: Create SSHx Session
-        id: sshx
-        run: |
-          SSHX_CMD=$(sshx -n)
-          echo "SSHX_CMD=$SSHX_CMD" >> $GITHUB_ENV
-          echo "::set-output name=cmd::$SSHX_CMD"
+    - name: Setup SSH Access
+      run: |
+        sudo useradd -m $USER
+        echo "$USER:$PASS" | sudo chpasswd
+        sudo usermod -aG sudo $USER
+        sudo systemctl restart ssh
 
-      - name: Send Discord DM
-        run: |
-          curl -X POST "https://discord.com/api/v10/users/@me/channels" \
-          -H "Authorization: Bot ${{ secrets.DISCORD_BOT_TOKEN }}" \
-          -H "Content-Type: application/json" \
-          -d "{\"recipient_id\": \"${{ secrets.DISCORD_USER_ID }}\"}" > dm.json
+    - name: Show Access Info + Send to Discord
+      env:
+        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      run: |
+        IP=$(curl -s4 https://ifconfig.me)
+        TUNIP=$(tailscale ip -4)
+        SSHX_URL=$(sshx --url 2>/dev/null || echo "SSHX failed")
+        echo "SSH: ssh $USER@$IP"
+        echo "TAILSCALE: ssh $USER@$TUNIP"
+        curl -H "Content-Type: application/json" \
+          -X POST \
+          -d "{\"content\": \"🟢 VPS is Live\n**Username:** $USER\n**Password:** (hidden)\n🌐 Public IP: \`$IP\`\n🔗 Tailscale IP: \`$TUNIP\`\n🧷 SSHX: $SSHX_URL\"}" \
+          $DISCORD_WEBHOOK
 
-          CHANNEL_ID=$(jq -r '.id' dm.json)
-
-          curl -X POST "https://discord.com/api/v10/channels/$CHANNEL_ID/messages" \
-          -H "Authorization: Bot ${{ secrets.DISCORD_BOT_TOKEN }}" \
-          -H "Content-Type: application/json" \
-          -d "$(jq -n --arg name "$VPS_NAME" \
-                       --arg ip "$TAIL_IP" \
-                       --arg sshx "${{ steps.sshx.outputs.cmd }}" \
-                       --arg pass "$VPS_PASS" \
-                       '{
-                         content: "**✅ VPS Deployed!**\n\n🖥️ Name: \($name)\n🌐 IP: \($ip)\n🔐 Password: \($pass)\n💻 SSHx: `\($sshx)`"
-                       }')"
-
-      - name: Sleep Until Next Cycle
-        run: sleep 21600  # 6 hours
+    - name: Run Long Process (Sleep for 6 hours)
+      run: sleep 21600  # 6 hours in seconds
