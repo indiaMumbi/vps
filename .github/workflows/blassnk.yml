@@ -17,7 +17,7 @@ on:
     - cron: '0 */6 * * *'  # Restart every 6 hours
 
 env:
-  VPS_DIR: "./vps_data"
+  VPS_DIR: vps_data
 
 jobs:
   build:
@@ -27,17 +27,32 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
+      - name: Set Defaults
+        id: defaults
+        run: |
+          echo "VPS_NAME=${{ github.event.inputs.vps_name }}" >> $GITHUB_ENV
+          echo "VPS_PASS=${{ github.event.inputs.vps_pass }}" >> $GITHUB_ENV
+          echo "DISCORD_ID=${{ github.event.inputs.discord_id }}" >> $GITHUB_ENV
+        if: github.event_name == 'workflow_dispatch'
+
+      - name: Fallback Defaults (for CRON)
+        run: |
+          echo "VPS_NAME=autovps" >> $GITHUB_ENV
+          echo "VPS_PASS=defaultpass" >> $GITHUB_ENV
+          echo "DISCORD_ID=0" >> $GITHUB_ENV
+        if: github.event_name == 'schedule'
+
       - name: Load Cached VPS Data
         id: cache-restore
         uses: actions/cache@v4
         with:
           path: ${{ env.VPS_DIR }}
-          key: ${{ github.event.inputs.vps_name || 'default' }}-vps-cache
+          key: vps-${{ env.VPS_NAME }}-cache
 
       - name: Setup VPS Directory
         run: |
           mkdir -p $VPS_DIR
-          echo "${{ github.event.inputs.vps_pass || 'defaultpass' }}" > $VPS_DIR/pass.txt
+          echo "$VPS_PASS" > $VPS_DIR/pass.txt
 
       - name: Install Tools
         run: |
@@ -48,18 +63,16 @@ jobs:
         uses: tailscale/github-action@v2
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-          hostname: ${{ github.event.inputs.vps_name || 'vps' }}
+          hostname: ${{ env.VPS_NAME }}
           args: up --ssh
 
       - name: Start tmate
         id: tmate
         uses: mxschmitt/action-tmate@v3
-        with:
-          limit-access-to-actor: false
 
       - name: Generate VPS Info
         run: |
-          echo "Name: ${{ github.event.inputs.vps_name || 'vps' }}" > info.txt
+          echo "Name: $VPS_NAME" > info.txt
           echo "Password: $(cat $VPS_DIR/pass.txt)" >> info.txt
           echo "Tailscale IP: $(tailscale ip -4)" >> info.txt
           echo "Tmate SSH: ${{ steps.tmate.outputs.ssh }}" >> info.txt
@@ -69,7 +82,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ env.VPS_DIR }}
-          key: ${{ github.event.inputs.vps_name || 'default' }}-vps-cache
+          key: vps-${{ env.VPS_NAME }}-cache
 
       - name: Upload Info File
         uses: actions/upload-artifact@v4
@@ -78,11 +91,12 @@ jobs:
           path: info.txt
 
       - name: DM User on Discord
+        if: env.DISCORD_ID != '0'
         run: |
-          curl -X POST https://discord.com/api/v10/users/${{ github.event.inputs.discord_id }}/messages \
+          curl -X POST https://discord.com/api/v10/users/$DISCORD_ID/messages \
           -H "Authorization: Bot ${{ secrets.DISCORD_BOT_TOKEN }}" \
           -H "Content-Type: application/json" \
-          -d @- << EOF
+          -d @- <<EOF
           {
             "content": "**🔁 VPS Auto-Restarted / New Session**\n\`\`\`\n$(cat info.txt)\n\`\`\`"
           }
