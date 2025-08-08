@@ -1,69 +1,52 @@
-name: Persistent VPS with Tailscale + SSHX
+name: Persistent VPS with SSHX + Tailscale
 
 on:
   workflow_dispatch:
-    inputs:
-      USERNAME:
-        description: 'Your SSH Username'
-        required: true
-      PASSWORD:
-        description: 'Your SSH Password'
-        required: true
   schedule:
-    - cron: '0 */6 * * *'  # Every 6 hours restart
+    - cron: '0 */6 * * *'
 
 jobs:
-  run-vps:
+  build:
     runs-on: ubuntu-latest
-    name: VPS Persistent Runner
+    timeout-minutes: 357
     steps:
+    - name: Set up persistent volume
+      uses: actions/cache@v3
+      with:
+        path: storage
+        key: persistent-storage
 
-    - name: Set user-defined env
+    - name: Setup VPS
       run: |
-        echo "USER=${{ github.event.inputs.USERNAME }}" >> $GITHUB_ENV
-        echo "PASS=${{ github.event.inputs.PASSWORD }}" >> $GITHUB_ENV
+        sudo apt update
+        sudo apt install -y curl unzip openssh-server
+        
+        # Setup storage folder
+        mkdir -p storage/home
+        sudo useradd -m -d /home/vpsuser -s /bin/bash vpsuser || true
+        sudo usermod -d $PWD/storage/home vpsuser
+        echo "vpsuser:123456" | sudo chpasswd
 
-    - name: Setup Swap and Install Packages
-      run: |
-        sudo fallocate -l 2G /swapfile
-        sudo chmod 600 /swapfile
-        sudo mkswap /swapfile
-        sudo swapon /swapfile
-        sudo apt update -y
-        sudo apt install curl unzip net-tools -y
+        # Enable SSH
+        sudo service ssh start
 
-    - name: Install Tailscale
-      run: |
+        # Tailscale (auto login)
         curl -fsSL https://tailscale.com/install.sh | sh
-        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --ssh --accept-routes
+        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --ssh --hostname=persistent-vps
 
-    - name: Install SSHX (fixed)
-      run: |
-        curl -L https://s3.amazonaws.com/sshx/sshx-x86_64-unknown-linux-musl.tar.gz -o sshx.tar.gz
-        tar -xzf sshx.tar.gz
-        sudo mv sshx /usr/local/bin/
-        sudo chmod +x /usr/local/bin/sshx
+        # SSHX Install
+        curl -fsSL https://sshx.io/get | sh
+        sudo mv sshx /usr/local/bin/sshx || true
+        chmod +x /usr/local/bin/sshx
 
-    - name: Setup SSH Access
-      run: |
-        sudo useradd -m $USER
-        echo "$USER:$PASS" | sudo chpasswd
-        sudo usermod -aG sudo $USER
-        sudo systemctl restart ssh
+        # Print Access Info
+        echo "=================="
+        echo "Username: vpsuser"
+        echo "Password: 123456"
+        echo "Public IPv4: $(curl -s4 https://ifconfig.me)"
+        echo "Tailscale IP: $(tailscale ip -4)"
+        echo "SSHX: $(sshx --print-only)"
+        echo "=================="
 
-    - name: Show Access Info + Send to Discord
-      env:
-        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-      run: |
-        IP=$(curl -s4 https://ifconfig.me)
-        TUNIP=$(tailscale ip -4)
-        SSHX_URL=$(sshx --url 2>/dev/null || echo "SSHX failed")
-        echo "SSH: ssh $USER@$IP"
-        echo "TAILSCALE: ssh $USER@$TUNIP"
-        curl -H "Content-Type: application/json" \
-          -X POST \
-          -d "{\"content\": \"🟢 VPS is Live\n**Username:** $USER\n**Password:** (hidden)\n🌐 Public IP: \`$IP\`\n🔗 Tailscale IP: \`$TUNIP\`\n🧷 SSHX: $SSHX_URL\"}" \
-          $DISCORD_WEBHOOK
-
-    - name: Run Long Process (Sleep for 6 hours)
-      run: sleep 21600  # 6 hours in seconds
+        # Keep alive
+        sleep 6h
