@@ -1,4 +1,4 @@
-name: LithManager-like Windows VM with Tailscale
+name: LithManager-like Windows VM minimal
 
 on:
   workflow_dispatch:
@@ -20,39 +20,17 @@ jobs:
         net user lithuser Password123 /add
         net localgroup administrators lithuser /add
 
-    - name: Install Google Chrome and Tailscale
+    - name: Install Google Chrome
       shell: pwsh
       run: |
-        Write-Output "Installing Chrome and Tailscale..."
-        choco install -y googlechrome tailscale
-        Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
+        Write-Output "Installing Google Chrome..."
+        choco install -y googlechrome
 
-    - name: Start Tailscale VPN
-      shell: pwsh
-      run: |
-        Write-Output "Starting Tailscale service and authenticating..."
-        Start-Service Tailscale
-        & "C:\Program Files\Tailscale IPN\tailscale.exe" up --authkey $env:TAILSCALE_AUTHKEY --accept-routes --accept-dns
-
-    - name: Show IP addresses
+    - name: Show public IP
       shell: pwsh
       run: |
         $publicIp = (Invoke-RestMethod -Uri 'http://ifconfig.me/ip').Trim()
-        $tailscaleIp = & "C:\Program Files\Tailscale IPN\tailscale.exe" ip -4
         Write-Output "Public IP: $publicIp"
-        Write-Output "Tailscale IP: $tailscaleIp"
-
-    - name: Download your game or app
-      shell: pwsh
-      run: |
-        Write-Output "Downloading your app..."
-        Invoke-WebRequest -Uri "https://example.com/game.exe" -OutFile "C:\game.exe"
-
-    - name: Run your game or app
-      shell: pwsh
-      run: |
-        Write-Output "Starting your app..."
-        Start-Process -FilePath "C:\game.exe"
 
     - name: Keep session alive for 6 hours
       shell: pwsh
