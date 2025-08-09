@@ -32,13 +32,13 @@ jobs:
       run: |
         Write-Output "Starting Tailscale service and authenticating..."
         Start-Service Tailscale
-        tailscale up --authkey $env:TAILSCALE_AUTHKEY --accept-routes --accept-dns
+        & "C:\Program Files\Tailscale IPN\tailscale.exe" up --authkey $env:TAILSCALE_AUTHKEY --accept-routes --accept-dns
 
     - name: Show IP addresses
       shell: pwsh
       run: |
         $publicIp = (Invoke-RestMethod -Uri 'http://ifconfig.me/ip').Trim()
-        $tailscaleIp = tailscale ip -4
+        $tailscaleIp = & "C:\Program Files\Tailscale IPN\tailscale.exe" ip -4
         Write-Output "Public IP: $publicIp"
         Write-Output "Tailscale IP: $tailscaleIp"
 
