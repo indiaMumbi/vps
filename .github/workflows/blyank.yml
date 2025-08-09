@@ -1,4 +1,4 @@
-name: LithManager-like Windows VM with Tailscale (Reliable IP)
+name: LithManager-like Windows VM minimal (No VPN)
 
 on:
   workflow_dispatch:
@@ -20,49 +20,17 @@ jobs:
         net user lithuser Password123 /add
         net localgroup administrators lithuser /add
 
-    - name: Install Google Chrome and Tailscale
+    - name: Install Google Chrome
       shell: pwsh
       run: |
-        Write-Output "Installing Chrome and Tailscale..."
-        choco install -y googlechrome tailscale
-        Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
-
-    - name: Start Tailscale VPN and wait for IP
-      shell: pwsh
-      run: |
-        Start-Service Tailscale
-        & "C:\Program Files\Tailscale IPN\tailscale.exe" up --authkey $env:TAILSCALE_AUTHKEY --accept-routes --accept-dns
-
-        $ip = ""
-        for ($i=0; $i -lt 30; $i++) {
-            Start-Sleep -Seconds 1
-            $ip = & "C:\Program Files\Tailscale IPN\tailscale.exe" ip -4
-            if ($ip -and $ip -ne "") { break }
-        }
-
-        if ($ip -and $ip -ne "") {
-            Write-Output "Tailscale IP: $ip"
-        } else {
-            Write-Output "Failed to get Tailscale IP after waiting."
-        }
+        Write-Output "Installing Google Chrome..."
+        choco install -y googlechrome
 
     - name: Show public IP
       shell: pwsh
       run: |
         $publicIp = (Invoke-RestMethod -Uri 'http://ifconfig.me/ip').Trim()
         Write-Output "Public IP: $publicIp"
-
-    - name: Download your game or app
-      shell: pwsh
-      run: |
-        Write-Output "Downloading your app..."
-        Invoke-WebRequest -Uri "https://example.com/game.exe" -OutFile "C:\game.exe"
-
-    - name: Run your game or app
-      shell: pwsh
-      run: |
-        Write-Output "Starting your app..."
-        Start-Process -FilePath "C:\game.exe"
 
     - name: Keep session alive for 6 hours
       shell: pwsh
