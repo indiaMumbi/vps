@@ -1,4 +1,4 @@
-name: LithManager Advanced Windows VM with Tailscale
+name: LithManager-like Windows VM with Tailscale
 
 on:
   workflow_dispatch:
@@ -20,28 +20,18 @@ jobs:
         net user lithuser Password123 /add
         net localgroup administrators lithuser /add
 
-    - name: Tighten Windows Firewall (allow only essential inbound)
-      shell: pwsh
-      run: |
-        Write-Output "Configuring firewall rules..."
-        # Block all inbound first
-        Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultInboundAction Block
-        # Allow RDP
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        # Allow outbound all (default)
-        Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Allow
-
     - name: Install Google Chrome and Tailscale
       shell: pwsh
       run: |
         Write-Output "Installing Chrome and Tailscale..."
         choco install -y googlechrome tailscale
+        refreshenv
 
     - name: Start Tailscale VPN
       shell: pwsh
       run: |
         Write-Output "Starting Tailscale service and authenticating..."
-        Start-Service tailscaled
+        Start-Service Tailscale
         tailscale up --authkey $env:TAILSCALE_AUTHKEY --accept-routes --accept-dns
 
     - name: Show IP addresses
@@ -52,29 +42,18 @@ jobs:
         Write-Output "Public IP: $publicIp"
         Write-Output "Tailscale IP: $tailscaleIp"
 
-    - name: Download multiple apps/games
+    - name: Download your game or app
       shell: pwsh
       run: |
-        Write-Output "Downloading your apps..."
+        Write-Output "Downloading your app..."
         Invoke-WebRequest -Uri "https://example.com/game.exe" -OutFile "C:\game.exe"
-        Invoke-WebRequest -Uri "https://example.com/tool.exe" -OutFile "C:\tool.exe"
 
-    - name: Run multiple apps in background
+    - name: Run your game or app
       shell: pwsh
       run: |
-        Write-Output "Starting game and tools..."
+        Write-Output "Starting your app..."
         Start-Process -FilePath "C:\game.exe"
-        Start-Process -FilePath "C:\tool.exe"
-        Write-Output "Started processes: game.exe, tool.exe"
 
-    - name: Graceful shutdown warning and countdown
+    - name: Keep session alive for 6 hours
       shell: pwsh
-      run: |
-        Write-Output "WARNING: Runner will restart in 5 minutes..."
-        Start-Sleep -Seconds 300
-
-    - name: Keep runner alive for remaining time
-      shell: pwsh
-      run: |
-        Write-Output "Keeping runner alive..."
-        Start-Sleep -Seconds 18600  # 6 hours minus 5 minutes countdown
+      run: Start-Sleep -Seconds 21600
