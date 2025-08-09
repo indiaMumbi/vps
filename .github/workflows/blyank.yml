@@ -25,7 +25,7 @@ jobs:
       run: |
         Write-Output "Installing Chrome and Tailscale..."
         choco install -y googlechrome tailscale
-        refreshenv
+        Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
 
     - name: Start Tailscale VPN
       shell: pwsh
