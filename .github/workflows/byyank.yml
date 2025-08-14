@@ -1,0 +1,89 @@
+name: Continuous Persistent VPS (Google Drive)
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:
+
+jobs:
+  vps-session:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set hostname to notyet
+        run: sudo hostnamectl set-hostname notyet
+
+      - name: Install prerequisites
+        run: |
+          sudo apt update
+          sudo apt install -y tmate curl unzip sudo net-tools neofetch zip
+
+      - name: Install rclone
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+          mkdir -p ~/.config/rclone
+          echo "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+
+      - name: Restore VPS from Google Drive
+        run: |
+          if rclone ls gdrive:/vps-backup/backup.zip; then
+            echo "Restoring VPS from Google Drive..."
+            rclone copy gdrive:/vps-backup/backup.zip .
+            sudo unzip -o backup.zip -d /
+          else
+            echo "No Google Drive backup found, starting fresh."
+          fi
+
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+      - name: Restore Tailscale state
+        run: |
+          if [ -f /opt/vps-backup/data/tailscaled.state ]; then
+            sudo mkdir -p /var/lib/tailscale
+            sudo cp /opt/vps-backup/data/tailscaled.state /var/lib/tailscale/tailscaled.state
+            sudo chmod 600 /var/lib/tailscale/tailscaled.state
+          fi
+
+      - name: Start Tailscale
+        run: |
+          sudo tailscaled &
+          sleep 8
+          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTHKEY }} --hostname=notyet || echo "Tailscale already up"
+
+      - name: Create user notyet with sudo
+        run: |
+          if ! id -u notyet >/dev/null 2>&1; then
+            sudo useradd -m -s /bin/bash notyet
+            echo "notyet:notyet" | sudo chpasswd
+            sudo usermod -aG sudo notyet
+            echo "notyet ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/notyet
+          fi
+
+      - name: Start tmate session for SSH access
+        uses: mxschmitt/action-tmate@v3
+
+      - name: Show Tailscale IP and tmate info
+        run: |
+          echo "🔗 Tailscale IP:"
+          tailscale ip -4 || echo "Tailscale IP not found"
+          echo ""
+          echo "🔑 tmate SSH session:"
+          cat $HOME/.tmate.sock/ssh
+
+      - name: Sleep to keep VPS alive
+        run: sleep 21600  # 6 hours
+
+      - name: Save VPS to Google Drive
+        run: |
+          echo "Saving VPS to Google Drive..."
+          sudo mkdir -p /opt/vps-backup/data
+          sudo cp /var/lib/tailscale/tailscaled.state /opt/vps-backup/data/
+          sudo chown -R $USER:$USER /opt/vps-backup
+          sudo zip -r backup.zip /opt/vps-backup /* -x "/proc/*" "/sys/*" "/dev/*" "/run/*" "/tmp/*"
+          rclone copy backup.zip gdrive:/vps-backup/ --progress
