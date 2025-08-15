@@ -8,7 +8,7 @@ on:
 jobs:
   vps-session:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 350  # 5h50m to allow safe backup
 
     steps:
       - name: Checkout repo
@@ -68,18 +68,15 @@ jobs:
       - name: Start tmate session for SSH access
         uses: mxschmitt/action-tmate@v3
 
-      - name: Show Tailscale IP and tmate info
+      - name: Show Tailscale IP
         run: |
           echo "🔗 Tailscale IP:"
           tailscale ip -4 || echo "Tailscale IP not found"
-          echo ""
-          echo "🔑 tmate SSH session:"
-          cat $HOME/.tmate.sock/ssh
 
-      - name: Sleep to keep VPS alive
-        run: sleep 21600  # 6 hours
+      - name: Keep VPS alive for 5.5 hours
+        run: sleep $((330*60))  # 5 hours 30 minutes
 
-      - name: Save VPS to Google Drive
+      - name: Save VPS to Google Drive (Backup Before Exit)
         run: |
           echo "Saving VPS to Google Drive..."
           sudo mkdir -p /opt/vps-backup/data
